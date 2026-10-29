@@ -1,0 +1,64 @@
+# Builds the review preview of rig's digest page and publishes it on GitHub Pages.
+# The page is saved by a command (curl) from a running rig; no HTML is committed (rig ADR 0003).
+# Re-run with with_marker=false to upload the same page over the same link without the lane marker.
+name: preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      night:
+        description: Night to render (runs/<night>.jsonl)
+        default: '2026-10-28'
+      with_marker:
+        description: Show the lane marker (repo secret LANE_MARKER) in the banner
+        type: boolean
+        default: true
+      rig_ref:
+        description: Commit or branch of ciborro/mega-before-i-looked
+        default: main
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ciborro/mega-before-i-looked
+          ref: ${{ inputs.rig_ref }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: corepack enable pnpm && pnpm install --frozen-lockfile
+      - name: Save the page
+        env:
+          LANE_MARKER: ${{ inputs.with_marker && secrets.LANE_MARKER || '' }}
+          PORT: '8787'
+        run: |
+          pnpm start > rig.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf localhost:8787/health > /dev/null && break; sleep 1; done
+          mkdir site
+          curl -sf "localhost:8787/digest/${{ inputs.night }}" -o site/index.html
+          grep -o '<header>.*</header>' site/index.html | sed 's/class="marker">[^<]*</class="marker">(see page)</'
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+          retention-days: 1
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
